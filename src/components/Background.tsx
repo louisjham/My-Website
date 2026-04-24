@@ -54,16 +54,33 @@ const sigilFragmentShader = `
 
 const morphVertexShader = `
   uniform float uTime;
-  uniform float uMorph; // 0: Sphere, 1: Box, 2: Torus
+  uniform float uMorph; 
   
   attribute vec3 positionBox;
   attribute vec3 positionTorus;
   
   varying vec2 vUv;
   varying float vDist;
+  varying vec3 vNormal;
+  varying vec3 vViewPosition;
+  varying vec4 vWorldPosition;
+
+  // Simple noise function
+  float hash(float n) { return fract(sin(n) * 1e4); }
+  float noise(vec3 x) {
+    vec3 p = floor(x);
+    vec3 f = fract(x);
+    f = f*f*(3.0-2.0*f);
+    float n = p.x + p.y*57.0 + 113.0*p.z;
+    return mix(mix(mix( hash(n+0.0), hash(n+1.0),f.x),
+                   mix( hash(n+57.0), hash(n+58.0),f.x),f.y),
+               mix(mix( hash(n+113.0), hash(n+114.0),f.x),
+                   mix( hash(n+170.0), hash(n+171.0),f.x),f.y),f.z);
+  }
 
   void main() {
     vUv = uv;
+    vNormal = normalize(normalMatrix * normal);
     
     vec3 targetPos;
     if (uMorph < 1.0) {
@@ -72,11 +89,16 @@ const morphVertexShader = `
       targetPos = mix(positionBox, positionTorus, uMorph - 1.0);
     }
 
-    // Add some organic noise/wobble
-    float wobble = sin(uTime * 2.0 + position.x * 5.0) * 0.1;
-    targetPos += normal * wobble;
+    // Layered noise for more "alien" organic movement
+    float n1 = noise(targetPos * 2.0 + uTime * 0.4);
+    float n2 = noise(targetPos * 4.0 - uTime * 0.6);
+    float combinedNoise = (n1 * 0.7 + n2 * 0.3);
     
-    vec4 mvPosition = modelViewMatrix * vec4(targetPos, 1.0);
+    targetPos += normal * combinedNoise * 0.45;
+    
+    vWorldPosition = modelMatrix * vec4(targetPos, 1.0);
+    vec4 mvPosition = viewMatrix * vWorldPosition;
+    vViewPosition = -mvPosition.xyz;
     vDist = length(mvPosition.xyz);
     gl_Position = projectionMatrix * mvPosition;
   }
@@ -85,20 +107,64 @@ const morphVertexShader = `
 const morphFragmentShader = `
   varying vec2 vUv;
   varying float vDist;
+  varying vec3 vNormal;
+  varying vec3 vViewPosition;
+  varying vec4 vWorldPosition;
   uniform float uTime;
 
-  void main() {
-    vec3 cyan = vec3(0.0, 0.95, 1.0);
-    vec3 green = vec3(0.0, 1.0, 0.2);
-    
-    float pulse = sin(uTime * 3.0) * 0.5 + 0.5;
-    vec3 color = mix(cyan, green, pulse);
-    
-    // Glimmer
-    float glimmer = step(0.99, sin(vUv.x * 20.0 + uTime) * sin(vUv.y * 20.0 - uTime));
-    color += glimmer;
+  // Voronoi for organic/bone structures
+  vec2 hash2(vec2 p) {
+    return fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5453);
+  }
 
-    gl_FragColor = vec4(color, 0.8);
+  float voronoi(vec2 x) {
+    vec2 n = floor(x);
+    vec2 f = fract(x);
+    float m = 8.0;
+    for(int j=-1; j<=1; j++)
+    for(int i=-1; i<=1; i++) {
+        vec2 g = vec2(float(i),float(j));
+        vec2 o = hash2(n + g);
+        vec2 r = g + o - f;
+        float d = dot(r,r);
+        if(d<m) m = d;
+    }
+    return sqrt(m);
+  }
+
+  void main() {
+    vec3 cyan = vec3(0.0, 0.9, 1.0);
+    vec3 neonGreen = vec3(0.0, 1.0, 0.4);
+    vec3 boneWhite = vec3(0.9, 0.9, 0.8);
+    vec3 deepPurple = vec3(0.2, 0.0, 0.4);
+    
+    vec3 normal = normalize(vNormal);
+    vec3 eye = normalize(vViewPosition);
+
+    // Structural noise (bone/circuit blend)
+    float v = voronoi(vUv * 15.0 + uTime * 0.1);
+    float circuit = step(0.95, sin(vUv.x * 100.0 + uTime * 0.5) * sin(vUv.y * 100.0));
+    
+    // Fresnel rim
+    float fresnel = pow(1.0 - max(dot(normal, eye), 0.0), 3.0);
+    
+    // Base lighting
+    float light = max(dot(normal, normalize(vec3(1.0, 2.0, 1.0))), 0.0);
+    float spec = pow(max(dot(normal, normalize(vec3(0.0, 1.0, 0.5))), 0.0), 32.0);
+    
+    // Blend bone and circuitry
+    vec3 color = mix(deepPurple, boneWhite * 0.4, 1.0 - v);
+    color = mix(color, cyan, circuit);
+    
+    // Final composite
+    vec3 finalColor = color * (light + 0.3) + spec * neonGreen;
+    finalColor += fresnel * neonGreen * 1.2;
+    
+    // Pulsing organic light
+    float pulse = sin(uTime * 3.0 + v * 10.0) * 0.5 + 0.5;
+    finalColor += pulse * neonGreen * 0.15 * (1.0 - v);
+
+    gl_FragColor = vec4(finalColor, 1.0);
   }
 `;
 
@@ -108,9 +174,9 @@ function MorphingCore({ morphState }: { morphState: number }) {
   const meshRef = useRef<THREE.Mesh>(null);
   
   const geometry = useMemo(() => {
-    // We'll use a high-poly sphere as the base and map other shapes onto its vertex count
-    const sphere = new THREE.SphereGeometry(1.5, 64, 64);
-    const box = new THREE.BoxGeometry(2, 2, 2, 42, 42); // Adjust segments to match vertex count roughly
+    // Smaller scale to avoid icon overlap
+    const sphere = new THREE.SphereGeometry(0.85, 64, 64);
+    const box = new THREE.BoxGeometry(1.2, 1.2, 1.2, 42, 42); 
     // Syncing vertex counts is tricky, let's just use 3 distinct geometries and lerp attributes
     // To keep it simple for this prototype, I'll use a single buffer geometry with custom attributes
     
@@ -155,7 +221,7 @@ function MorphingCore({ morphState }: { morphState: number }) {
   useEffect(() => {
     gsap.to(uniforms.uMorph, {
       value: morphState,
-      duration: 1.2,
+      duration: 2.5,
       ease: 'power3.inOut'
     });
   }, [morphState, uniforms]);
@@ -171,15 +237,14 @@ function MorphingCore({ morphState }: { morphState: number }) {
   });
 
   return (
-    <mesh ref={meshRef}>
-      <primitive object={geometry} />
+    <mesh ref={meshRef} geometry={geometry}>
       <shaderMaterial
         vertexShader={morphVertexShader}
         fragmentShader={morphFragmentShader}
         uniforms={uniforms}
-        wireframe={true}
+        wireframe={false}
         transparent={true}
-        blending={THREE.AdditiveBlending}
+        side={THREE.DoubleSide}
       />
     </mesh>
   );
@@ -194,8 +259,8 @@ function SigilFloor() {
   });
 
   return (
-    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -2, 0]}>
-      <planeGeometry args={[15, 15]} />
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -2.5, 0]}>
+      <planeGeometry args={[10, 10]} />
       <shaderMaterial
         vertexShader={sigilVertexShader}
         fragmentShader={sigilFragmentShader}
@@ -209,8 +274,7 @@ function SigilFloor() {
 export default function Background({ morphState = 0 }: { morphState?: number }) {
   return (
     <div className="fixed inset-0 -z-10 bg-[#020403]">
-      <Canvas camera={{ position: [0, 0, 8], fov: 45 }}>
-        <ambientLight intensity={0.5} />
+      <Canvas camera={{ position: [0, 0, 7], fov: 45 }}>
         <MorphingCore morphState={morphState} />
         <SigilFloor />
       </Canvas>

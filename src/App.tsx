@@ -78,7 +78,7 @@ export default function App() {
   };
 
   return (
-    <main className="hub-container crt bg-[#020403] text-eldritch-green font-sans overflow-hidden">
+    <main className="hub-container crt text-eldritch-green font-sans overflow-hidden">
       <Background morphState={morphState} />
       
       {/* Overlay Scanline */}
@@ -101,8 +101,8 @@ export default function App() {
         {/* Circular Menu - Perfectly centered around the 3D core */}
         <div className="relative w-full h-full flex items-center justify-center">
           {arrangedItems.map((item) => {
-            // Tightened radius to avoid overlap with top/bottom UI zones
-            const radius = activeTab === item.id ? 100 : 85;
+            // Expanded radius to make room for central core
+            const radius = activeTab === item.id ? 200 : 170;
             const x = Math.cos(item.angle) * radius;
             const y = Math.sin(item.angle) * radius;
             const isTabActive = activeTab === item.id;
@@ -171,7 +171,6 @@ export default function App() {
         <Terminal size={48} className="-rotate-12" />
         <div className="text-[10px] mt-2 text-right">CONNECTION::STABLE</div>
       </div>
-
     </main>
   );
 }
